@@ -45,6 +45,12 @@
     ctx.fillRect(0,0,canvas.width,canvas.height);
   }
 
+  // シンクロ合成用：各参加者のオフスクリーンcanvasは「透明」でクリアする。
+  // 不透明な白でクリアすると、drawImageで重ねたときに下のレイヤーの絵を覆い隠してしまうため。
+  function clearTransparent(ctx, canvas){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+
   function drawStroke(ctx, stroke){
     if(!stroke) return;
     ctx.save();
@@ -292,7 +298,7 @@
       const offCanvas = document.createElement("canvas");
       offCanvas.width = 1280; offCanvas.height = 720;
       const offCtx = offCanvas.getContext("2d");
-      clearCanvas(offCtx, offCanvas);
+      clearTransparent(offCtx, offCanvas);
 
       const s = {
         occupied: false, hidden: true, name: "", part: "",
@@ -341,7 +347,7 @@
         if(next !== s.clearVersion){
           s.clearVersion = next;
           s.drawQueue.length = 0;
-          clearCanvas(s.offCtx, offCanvas);
+          clearTransparent(s.offCtx, offCanvas);
           queueComposite();
         }
       };
