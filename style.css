@@ -18,3 +18,16 @@ code{background:#eff4ef;border-radius:7px;padding:2px 6px}
 .obs-slot{position:relative;background:#fff;border-radius:18px;overflow:hidden;border:3px solid rgba(75,145,96,.35);box-shadow:0 8px 22px rgba(0,0,0,.12)}
 .obs-slot canvas{position:absolute;inset:0;width:100%;height:100%}.obs-meta{position:absolute;left:12px;right:12px;top:10px;z-index:2;display:flex;justify-content:space-between;gap:10px;pointer-events:none}
 .badge{background:rgba(255,255,255,.9);padding:7px 11px;border-radius:999px;font-weight:900;box-shadow:0 4px 12px rgba(0,0,0,.12)}.empty{display:grid;place-items:center;height:100%;font-weight:900;color:#86938a}
+.person-main{display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer}.visibility-state{font-size:12px;font-weight:900;padding:5px 9px;border-radius:999px}.visibility-state.is-hidden{background:#efe9f8;color:#69438c}.visibility-state.is-public{background:#e5f5e9;color:#28713b}
+.blind-cover{position:absolute;inset:0;z-index:3;display:none;place-items:center;text-align:center;background:linear-gradient(135deg,#dff3e4,#f5e9f5);color:#36523d}.blind-cover>div{display:grid;gap:8px;padding:24px}.blind-cover strong{font-size:clamp(28px,4vw,64px);font-weight:1000}.blind-cover span{font-size:clamp(14px,1.6vw,26px);font-weight:800;opacity:.75}.focus-mode .obs-slot{border-radius:0;border:0}.focus-mode{padding:0;gap:0}
+.obs-grid.mode-synchro{display:flex}
+.synchro-wrap{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.synchro-canvas-shell{position:relative;width:100%;max-width:calc(100vh*16/9);aspect-ratio:16/9;background:#fff;border-radius:18px;overflow:hidden;border:3px solid rgba(75,145,96,.35);box-shadow:0 8px 22px rgba(0,0,0,.12)}
+.synchro-canvas-shell canvas{position:absolute;inset:0;width:100%;height:100%}
+.synchro-status{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:0 12px}
+.part-badge{display:flex;align-items:center;gap:8px;padding:8px 16px;border-radius:999px;font-weight:900;font-size:clamp(14px,1.6vw,22px);background:rgba(255,255,255,.9);color:#36523d;box-shadow:0 4px 12px rgba(0,0,0,.12)}
+.part-badge .dot{width:10px;height:10px;border-radius:50%;background:#b7c2ba;flex:none}
+.part-badge.revealed .dot{background:#43a047}
+.part-badge.pending{opacity:.6}
+.part-input{width:100%;margin-top:8px}
+.mode-row button.active{background:var(--green);color:#fff}

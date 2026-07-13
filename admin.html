@@ -1,32 +1,46 @@
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>お絵描き管理ページ</title><link rel="stylesheet" href="style.css"></head>
 <body><main class="wrap"><section class="card stack"><div class="head"><div><h2 style="margin:0">🎮 お絵描き管理ページ</h2><div class="small">参加人数・参加者・キャンバスを管理します</div></div><div id="status" class="status">接続確認中</div></div>
 <div class="row"><label>部屋ID <input id="room" value="abo-room" maxlength="30"></label><button id="connectBtn">接続</button></div>
-<div class="tool"><strong>表示・参加人数</strong><div class="row" style="margin-top:8px"><button data-layout="1" class="secondary">1人</button><button data-layout="2" class="secondary">2人</button><button data-layout="4">4人</button></div></div>
+<div class="tool"><strong>表示・参加人数</strong><div class="row" style="margin-top:8px"><button data-layout="1" class="secondary">1人</button><button data-layout="2" class="secondary">2人</button><button data-layout="4">4人</button><button id="normalView" class="secondary">通常表示に戻す</button></div></div>
+<div class="tool"><strong>表示モード</strong><div class="row mode-row" style="margin-top:8px"><button id="modeGrid" data-mode="grid" class="secondary active">グリッド表示</button><button id="modeSynchro" data-mode="synchro" class="secondary">シンクロ表示（合体イラスト）</button></div><div class="small">シンクロ表示中は、各参加者の「公開する」を押すごとにパーツが1枚の絵に重なって表示されます。目隠し中のパーツは合成されません。</div></div>
 <div><h3>参加者一覧</h3><div id="participants" class="participants"></div></div>
 <div class="row"><button id="clearAll" class="danger">全員の絵を全消し</button><button id="resetAll" class="danger">部屋を全部リセット</button></div>
 <div class="small">参加URL：<code id="joinUrl"></code><br>OBS URL：<code id="obsUrl"></code></div></section></main>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script><script src="firebase-config.js"></script>
 <script>
 (()=>{
-const $=id=>document.getElementById(id);let db,roomId="";const slotListeners=new Map(),slotData={};
+const $=id=>document.getElementById(id);let db,roomId="";const slotListeners=new Map(),slotData={};let modeRef=null,modeHandler=null;
 function status(t,ok=false){$("status").textContent=t;$("status").className="status "+(ok?"ok":"")}
 function clean(v){return(v||"abo-room").trim().replace(/[.#$\[\]\/]/g,"-").slice(0,30)}
 function init(){if(!firebase.apps.length)firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.database()}
 function urls(){const base=location.href.replace(/admin\.html.*$/,'');$("joinUrl").textContent=`${base}index.html?room=${roomId}`;$("obsUrl").textContent=`${base}obs.html?room=${roomId}`}
 function esc(v){return String(v||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
 function stopSlotListeners(){for(const items of slotListeners.values())for(const [ref,fn] of items)ref.off("value",fn);slotListeners.clear()}
+function captureFocusedPartInput(){
+ const a=document.activeElement;
+ if(a&&a.classList&&a.classList.contains("part-input"))return{slot:a.dataset.slot,value:a.value,selStart:a.selectionStart,selEnd:a.selectionEnd};
+ return null;
+}
+function restoreFocusedPartInput(captured){
+ if(!captured)return;
+ const el=document.querySelector(`.part-input[data-slot="${captured.slot}"]`);
+ if(el){el.value=captured.value;el.focus();try{el.setSelectionRange(captured.selStart,captured.selEnd)}catch(e){}}
+}
 function render(){
+ const captured=captureFocusedPartInput();
  $("participants").innerHTML="";
  for(let i=1;i<=4;i++){
   const id=`slot${i}`,p=slotData[id],occupied=Boolean(p&&p.participantId),el=document.createElement("div");el.className="person";
-  el.innerHTML=occupied?`<div><strong>${i}. ${esc(p.name)}</strong></div><div class="row"><button class="secondary clear" data-slot="${id}">絵を消す</button><button class="danger remove" data-slot="${id}">退出させる</button></div>`:`<div><strong>${i}. 空き</strong></div>`;
+  const hidden=p?.hidden!==false;
+  el.innerHTML=occupied?`<div class="person-main zoom" data-slot="${id}" title="クリックでアップ表示"><strong>${i}. ${esc(p.name)}</strong><span class="visibility-state ${hidden?'is-hidden':'is-public'}">${hidden?'🙈 目隠し中':'👀 公開中'}</span></div><label class="small" style="display:block">パーツ名（シンクロ表示用）<input class="part-input" data-slot="${id}" value="${esc(p.part||'')}" placeholder="例：胴体・手足・顔" maxlength="20"></label><div class="row"><button class="${hidden?'':'secondary'} visibility" data-slot="${id}" data-hidden="${hidden?'false':'true'}">${hidden?'公開する':'目隠しする'}</button><button class="secondary zoom" data-slot="${id}">アップ表示</button><button class="secondary clear" data-slot="${id}">絵を消す</button><button class="danger remove" data-slot="${id}">退出させる</button></div>`:`<div><strong>${i}. 空き</strong></div>`;
   $("participants").appendChild(el);
  }
+ restoreFocusedPartInput(captured);
 }
 function watchSlot(id){
- const base=db.ref(`drawingRooms/${roomId}/participants/${id}`),items=[];slotData[id]={participantId:null,name:""};
- for(const key of ["participantId","name"]){
-  const ref=base.child(key),fn=s=>{slotData[id][key]=s.val()||"";render()};ref.on("value",fn);items.push([ref,fn]);
+ const base=db.ref(`drawingRooms/${roomId}/participants/${id}`),items=[];slotData[id]={participantId:null,name:"",hidden:true,part:""};
+ for(const key of ["participantId","name","hidden","part"]){
+  const ref=base.child(key),fn=s=>{const value=s.val();slotData[id][key]=(key==="hidden")?(value!==false):(value||"");render()};ref.on("value",fn);items.push([ref,fn]);
  }
  slotListeners.set(id,items);
 }
@@ -34,6 +48,11 @@ function connect(){
  roomId=clean($("room").value);$("room").value=roomId;history.replaceState(null,"",`?room=${encodeURIComponent(roomId)}`);urls();stopSlotListeners();
  for(let i=1;i<=4;i++)watchSlot(`slot${i}`);
  db.ref(`drawingRooms/${roomId}/settings/layout`).once("value").then(s=>{if(!s.exists())db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)});
+ if(modeRef&&modeHandler)modeRef.off("value",modeHandler);
+ modeRef=db.ref(`drawingRooms/${roomId}/settings/mode`);
+ modeRef.once("value").then(s=>{if(!s.exists())modeRef.set("grid")});
+ modeHandler=s=>{const val=s.val()==="synchro"?"synchro":"grid";document.querySelectorAll("[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===val))};
+ modeRef.on("value",modeHandler);
  status(`接続中：${roomId}`,true);render();
 }
 async function clearSlot(slot){
@@ -44,11 +63,22 @@ async function clearSlot(slot){
 }
 document.addEventListener("click",async e=>{
  const l=e.target.closest("[data-layout]");if(l){const n=+l.dataset.layout;await db.ref(`drawingRooms/${roomId}/settings/layout`).set(n);document.querySelectorAll("[data-layout]").forEach(b=>b.classList.toggle("secondary",b!==l));return}
+ const md=e.target.closest("[data-mode]");if(md){await db.ref(`drawingRooms/${roomId}/settings/mode`).set(md.dataset.mode);return}
+ const v=e.target.closest(".visibility");if(v){await db.ref(`drawingRooms/${roomId}/participants/${v.dataset.slot}/hidden`).set(v.dataset.hidden==="true");return}
+ const z=e.target.closest(".zoom");if(z){await db.ref(`drawingRooms/${roomId}/settings/focusSlot`).set(z.dataset.slot);return}
  const c=e.target.closest(".clear");if(c){await clearSlot(c.dataset.slot);return}
  const x=e.target.closest(".remove");if(x&&confirm("この参加者を退出させますか？"))await db.ref(`drawingRooms/${roomId}/participants/${x.dataset.slot}`).remove();
 });
+document.addEventListener("change",e=>{
+ const p=e.target.closest(".part-input");
+ if(p)db.ref(`drawingRooms/${roomId}/participants/${p.dataset.slot}/part`).set(p.value.trim().slice(0,20));
+});
+document.addEventListener("keydown",e=>{
+ if(e.target.classList&&e.target.classList.contains("part-input")&&e.key==="Enter"){e.preventDefault();e.target.blur()}
+});
+$("normalView").onclick=()=>db.ref(`drawingRooms/${roomId}/settings/focusSlot`).remove();
 $("clearAll").onclick=async()=>{if(!confirm("全員の絵を消しますか？"))return;await Promise.all([1,2,3,4].map(i=>clearSlot(`slot${i}`)))};
-$("resetAll").onclick=async()=>{if(confirm("参加者・絵・設定をすべてリセットしますか？")){await db.ref(`drawingRooms/${roomId}`).remove();await db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)}};
+$("resetAll").onclick=async()=>{if(confirm("参加者・絵・設定をすべてリセットしますか？")){await db.ref(`drawingRooms/${roomId}`).remove();await db.ref(`drawingRooms/${roomId}/settings/layout`).set(4);await db.ref(`drawingRooms/${roomId}/settings/mode`).set("grid")}};
 $("connectBtn").onclick=connect;init();const q=new URLSearchParams(location.search);if(q.get("room"))$("room").value=q.get("room");connect();
 })();
 </script></body></html>

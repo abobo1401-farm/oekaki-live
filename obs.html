@@ -23,8 +23,11 @@
     .slice(0,30);
 
   let layout = 4;
+  let focusSlot = null;
+  let mode = "grid";
   const slotStates = new Map();
   const slotListeners = new Map();
+  let synchro = null; // holds per-slot offscreen state + listeners while mode==="synchro"
 
   function escapeHtml(value){
     return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -83,6 +86,7 @@
         <span class="badge name-badge"></span>
         <span class="badge prompt-badge" hidden></span>
       </div>
+      <div class="blind-cover"><div><strong>🎨 お絵描き中</strong><span>公開までお待ちください</span></div></div>
       <div class="empty">参加待ち</div>
     `;
 
@@ -92,14 +96,16 @@
     const empty = box.querySelector(".empty");
     const nameBadge = box.querySelector(".name-badge");
     const promptBadge = box.querySelector(".prompt-badge");
+    const blindCover = box.querySelector(".blind-cover");
 
     clearCanvas(ctx, canvas);
 
     const state = {
-      box, canvas, ctx, meta, empty, nameBadge, promptBadge,
+      box, canvas, ctx, meta, empty, nameBadge, promptBadge, blindCover,
       participantId: null,
       name: "",
       prompt: "",
+      hidden: true,
       clearVersion: 0,
       drawQueue: [],
       frameRequested: false
@@ -112,6 +118,7 @@
     const promptRef = base.child("prompt");
     const strokesRef = base.child("strokes");
     const clearVersionRef = base.child("clearVersion");
+    const hiddenRef = base.child("hidden");
 
     const listeners = [];
 
@@ -120,6 +127,7 @@
       state.canvas.style.display = occupied ? "block" : "none";
       state.meta.hidden = !occupied;
       state.empty.style.display = occupied ? "none" : "grid";
+      state.blindCover.style.display = occupied && state.hidden ? "grid" : "none";
 
       if(!occupied){
         clearCanvas(state.ctx,state.canvas);
@@ -143,6 +151,11 @@
       state.prompt = snap.val() || "";
       state.promptBadge.textContent = state.prompt ? `お題：${state.prompt}` : "";
       state.promptBadge.hidden = !state.prompt;
+    };
+
+    const onHidden = snap => {
+      state.hidden = snap.val() !== false;
+      updateVisibility();
     };
 
     const flushDrawQueue = () => {
@@ -180,13 +193,15 @@
     promptRef.on("value",onPrompt);
     strokesRef.on("child_added",onStroke);
     clearVersionRef.on("value",onClearVersion);
+    hiddenRef.on("value",onHidden);
 
     listeners.push(
       [participantIdRef,"value",onParticipantId],
       [nameRef,"value",onName],
       [promptRef,"value",onPrompt],
       [strokesRef,"child_added",onStroke],
-      [clearVersionRef,"value",onClearVersion]
+      [clearVersionRef,"value",onClearVersion],
+      [hiddenRef,"value",onHidden]
     );
 
     slotListeners.set(slot,listeners);
@@ -194,17 +209,170 @@
     return box;
   }
 
-  function renderLayout(){
+  function teardownGrid(){
     for(const slot of slotListeners.keys()){
       removeSlotListeners(slot);
     }
     slotStates.clear();
-    grid.innerHTML = "";
-    grid.className = `obs-grid layout-${layout}`;
+  }
 
-    for(let i=1;i<=layout;i++){
-      const slot = `slot${i}`;
-      grid.appendChild(createSlot(slot,i));
+  function renderLayout(){
+    if(mode !== "grid") return;
+    teardownGrid();
+    grid.innerHTML = "";
+    const focused = focusSlot && /^slot[1-4]$/.test(focusSlot);
+    grid.className = focused ? "obs-grid layout-1 focus-mode" : `obs-grid layout-${layout}`;
+
+    if(focused){
+      const number = Number(focusSlot.replace("slot",""));
+      grid.appendChild(createSlot(focusSlot,number));
+    }else{
+      for(let i=1;i<=layout;i++){
+        const slot = `slot${i}`;
+        grid.appendChild(createSlot(slot,i));
+      }
+    }
+  }
+
+  // ---- シンクロ表示（合体イラスト）モード ----
+  // 各スロットは見た目には表示されないオフスクリーンcanvasに今まで通り差分描画し、
+  // 公開(hidden=false)になっているスロットだけを1枚の合成canvasへdrawImageで重ねる。
+  function teardownSynchro(){
+    if(!synchro) return;
+    for(const [ref,event,handler] of synchro.listeners){
+      ref.off(event,handler);
+    }
+    synchro = null;
+  }
+
+  function renderSynchro(){
+    grid.innerHTML = `
+      <div class="synchro-wrap">
+        <div class="synchro-canvas-shell"><canvas width="1280" height="720"></canvas></div>
+        <div class="synchro-status"></div>
+      </div>`;
+    grid.className = "obs-grid mode-synchro";
+
+    const canvas = grid.querySelector(".synchro-canvas-shell canvas");
+    const ctx = canvas.getContext("2d");
+    const statusEl = grid.querySelector(".synchro-status");
+    clearCanvas(ctx, canvas);
+
+    const slots = [1,2,3,4].map(n => `slot${n}`);
+    const states = {};
+    const listeners = [];
+    let compositeQueued = false;
+
+    const queueComposite = () => {
+      if(compositeQueued) return;
+      compositeQueued = true;
+      requestAnimationFrame(() => {
+        compositeQueued = false;
+        clearCanvas(ctx, canvas);
+        for(const slot of slots){
+          const s = states[slot];
+          if(s && s.occupied && !s.hidden){
+            ctx.drawImage(s.offCanvas, 0, 0);
+          }
+        }
+      });
+    };
+
+    const updateStatus = () => {
+      statusEl.innerHTML = slots.map(slot => {
+        const s = states[slot];
+        if(!s || !s.occupied) return "";
+        const label = escapeHtml(s.part || s.name || slot);
+        const revealed = !s.hidden;
+        return `<div class="part-badge ${revealed ? "revealed" : "pending"}"><span class="dot"></span>${label}${revealed ? "" : "（準備中）"}</div>`;
+      }).join("");
+    };
+
+    for(const slot of slots){
+      const offCanvas = document.createElement("canvas");
+      offCanvas.width = 1280; offCanvas.height = 720;
+      const offCtx = offCanvas.getContext("2d");
+      clearCanvas(offCtx, offCanvas);
+
+      const s = {
+        occupied: false, hidden: true, name: "", part: "",
+        clearVersion: 0, offCanvas, offCtx,
+        drawQueue: [], frameRequested: false
+      };
+      states[slot] = s;
+
+      const base = db.ref(`drawingRooms/${room}/participants/${slot}`);
+      const participantIdRef = base.child("participantId");
+      const nameRef = base.child("name");
+      const partRef = base.child("part");
+      const hiddenRef = base.child("hidden");
+      const strokesRef = base.child("strokes");
+      const clearVersionRef = base.child("clearVersion");
+
+      const onParticipantId = snap => { s.occupied = Boolean(snap.val()); updateStatus(); queueComposite(); };
+      const onName = snap => { s.name = snap.val() || ""; updateStatus(); };
+      const onPart = snap => { s.part = snap.val() || ""; updateStatus(); };
+      const onHidden = snap => { s.hidden = snap.val() !== false; updateStatus(); queueComposite(); };
+
+      const flushOwnQueue = () => {
+        s.frameRequested = false;
+        const queue = s.drawQueue.splice(0);
+        for(const stroke of queue){
+          if(Number(stroke.clearVersion || 0) >= s.clearVersion){
+            drawStroke(s.offCtx, stroke);
+          }
+        }
+        if(!s.hidden) queueComposite();
+      };
+
+      const onStroke = snap => {
+        const stroke = snap.val();
+        if(!s.occupied || !stroke) return;
+        if(Number(stroke.clearVersion || 0) < s.clearVersion) return;
+        s.drawQueue.push(stroke);
+        if(!s.frameRequested){
+          s.frameRequested = true;
+          requestAnimationFrame(flushOwnQueue);
+        }
+      };
+
+      const onClearVersion = snap => {
+        const next = Number(snap.val() || 0);
+        if(next !== s.clearVersion){
+          s.clearVersion = next;
+          s.drawQueue.length = 0;
+          clearCanvas(s.offCtx, offCanvas);
+          queueComposite();
+        }
+      };
+
+      participantIdRef.on("value",onParticipantId);
+      nameRef.on("value",onName);
+      partRef.on("value",onPart);
+      hiddenRef.on("value",onHidden);
+      strokesRef.on("child_added",onStroke);
+      clearVersionRef.on("value",onClearVersion);
+
+      listeners.push(
+        [participantIdRef,"value",onParticipantId],
+        [nameRef,"value",onName],
+        [partRef,"value",onPart],
+        [hiddenRef,"value",onHidden],
+        [strokesRef,"child_added",onStroke],
+        [clearVersionRef,"value",onClearVersion]
+      );
+    }
+
+    synchro = { listeners };
+  }
+
+  function applyMode(){
+    if(mode === "synchro"){
+      teardownGrid();
+      renderSynchro();
+    }else{
+      teardownSynchro();
+      renderLayout();
     }
   }
 
@@ -212,6 +380,16 @@
     const next = Number(snap.val());
     layout = [1,2,4].includes(next) ? next : 4;
     renderLayout();
+  });
+
+  db.ref(`drawingRooms/${room}/settings/focusSlot`).on("value", snap => {
+    focusSlot = snap.val() || null;
+    renderLayout();
+  });
+
+  db.ref(`drawingRooms/${room}/settings/mode`).on("value", snap => {
+    mode = snap.val() === "synchro" ? "synchro" : "grid";
+    applyMode();
   });
 })();
 </script>
