@@ -7,13 +7,48 @@
 <div class="small">参加URL：<code id="joinUrl"></code><br>OBS URL：<code id="obsUrl"></code></div></section></main>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script><script src="firebase-config.js"></script>
 <script>
-(()=>{const $=id=>document.getElementById(id);let db,roomId="",participantsRef=null;function status(t,ok=false){$("status").textContent=t;$("status").className="status "+(ok?"ok":"")}function clean(v){return(v||"abo-room").trim().replace(/[.#$\[\]\/]/g,"-").slice(0,30)}
+(()=>{
+const $=id=>document.getElementById(id);let db,roomId="";const slotListeners=new Map(),slotData={};
+function status(t,ok=false){$("status").textContent=t;$("status").className="status "+(ok?"ok":"")}
+function clean(v){return(v||"abo-room").trim().replace(/[.#$\[\]\/]/g,"-").slice(0,30)}
 function init(){if(!firebase.apps.length)firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.database()}
-function urls(){const base=location.href.replace(/admin\.html.*$/,"");$("joinUrl").textContent=`${base}index.html?room=${roomId}`;$("obsUrl").textContent=`${base}obs.html?room=${roomId}`}
-function connect(){roomId=clean($("room").value);$("room").value=roomId;history.replaceState(null,"",`?room=${encodeURIComponent(roomId)}`);urls();if(participantsRef)participantsRef.off();participantsRef=db.ref(`drawingRooms/${roomId}/participants`);participantsRef.on("value",render);db.ref(`drawingRooms/${roomId}/settings/layout`).once("value").then(s=>{if(!s.exists())db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)});status(`接続中：${roomId}`,true)}
-function esc(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
-function render(s){const data=s.val()||{};$("participants").innerHTML="";for(let i=1;i<=4;i++){const id=`slot${i}`,p=data[id],el=document.createElement("div");el.className="person";el.innerHTML=p?`<div><strong>${i}. ${esc(p.name||"")}</strong><div class="small">お題：${esc(p.prompt||"")}</div></div><div class="row"><button class="secondary clear" data-slot="${id}">絵を消す</button><button class="danger remove" data-slot="${id}">退出させる</button></div>`:`<div><strong>${i}. 空き</strong></div>`;$("participants").appendChild(el)}}
-document.addEventListener("click",async e=>{const l=e.target.closest("[data-layout]");if(l){const n=+l.dataset.layout;await db.ref(`drawingRooms/${roomId}/settings/layout`).set(n);document.querySelectorAll("[data-layout]").forEach(b=>b.classList.toggle("secondary",b!==l));return}const c=e.target.closest(".clear");if(c){const r=db.ref(`drawingRooms/${roomId}/participants/${c.dataset.slot}`);await r.child("strokes").remove();await r.child("clearAt").set(firebase.database.ServerValue.TIMESTAMP);return}const x=e.target.closest(".remove");if(x&&confirm("この参加者を退出させますか？"))await db.ref(`drawingRooms/${roomId}/participants/${x.dataset.slot}`).remove()});
-$("clearAll").onclick=async()=>{if(!confirm("全員の絵を消しますか？"))return;for(let i=1;i<=4;i++){const r=db.ref(`drawingRooms/${roomId}/participants/slot${i}`);await r.child("strokes").remove();await r.child("clearAt").set(firebase.database.ServerValue.TIMESTAMP)}};
-$("resetAll").onclick=async()=>{if(confirm("参加者・絵・設定をすべてリセットしますか？")){await db.ref(`drawingRooms/${roomId}`).remove();await db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)}};$("connectBtn").onclick=connect;init();const q=new URLSearchParams(location.search);if(q.get("room"))$("room").value=q.get("room");connect()})();
+function urls(){const base=location.href.replace(/admin\.html.*$/,'');$("joinUrl").textContent=`${base}index.html?room=${roomId}`;$("obsUrl").textContent=`${base}obs.html?room=${roomId}`}
+function esc(v){return String(v||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
+function stopSlotListeners(){for(const items of slotListeners.values())for(const [ref,fn] of items)ref.off("value",fn);slotListeners.clear()}
+function render(){
+ $("participants").innerHTML="";
+ for(let i=1;i<=4;i++){
+  const id=`slot${i}`,p=slotData[id],occupied=Boolean(p&&p.participantId),el=document.createElement("div");el.className="person";
+  el.innerHTML=occupied?`<div><strong>${i}. ${esc(p.name)}</strong></div><div class="row"><button class="secondary clear" data-slot="${id}">絵を消す</button><button class="danger remove" data-slot="${id}">退出させる</button></div>`:`<div><strong>${i}. 空き</strong></div>`;
+  $("participants").appendChild(el);
+ }
+}
+function watchSlot(id){
+ const base=db.ref(`drawingRooms/${roomId}/participants/${id}`),items=[];slotData[id]={participantId:null,name:""};
+ for(const key of ["participantId","name"]){
+  const ref=base.child(key),fn=s=>{slotData[id][key]=s.val()||"";render()};ref.on("value",fn);items.push([ref,fn]);
+ }
+ slotListeners.set(id,items);
+}
+function connect(){
+ roomId=clean($("room").value);$("room").value=roomId;history.replaceState(null,"",`?room=${encodeURIComponent(roomId)}`);urls();stopSlotListeners();
+ for(let i=1;i<=4;i++)watchSlot(`slot${i}`);
+ db.ref(`drawingRooms/${roomId}/settings/layout`).once("value").then(s=>{if(!s.exists())db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)});
+ status(`接続中：${roomId}`,true);render();
+}
+async function clearSlot(slot){
+ const r=db.ref(`drawingRooms/${roomId}/participants/${slot}`);
+ await r.child("clearVersion").transaction(v=>(Number(v)||0)+1);
+ await r.child("strokes").remove();
+ await r.child("clearAt").set(firebase.database.ServerValue.TIMESTAMP);
+}
+document.addEventListener("click",async e=>{
+ const l=e.target.closest("[data-layout]");if(l){const n=+l.dataset.layout;await db.ref(`drawingRooms/${roomId}/settings/layout`).set(n);document.querySelectorAll("[data-layout]").forEach(b=>b.classList.toggle("secondary",b!==l));return}
+ const c=e.target.closest(".clear");if(c){await clearSlot(c.dataset.slot);return}
+ const x=e.target.closest(".remove");if(x&&confirm("この参加者を退出させますか？"))await db.ref(`drawingRooms/${roomId}/participants/${x.dataset.slot}`).remove();
+});
+$("clearAll").onclick=async()=>{if(!confirm("全員の絵を消しますか？"))return;await Promise.all([1,2,3,4].map(i=>clearSlot(`slot${i}`)))};
+$("resetAll").onclick=async()=>{if(confirm("参加者・絵・設定をすべてリセットしますか？")){await db.ref(`drawingRooms/${roomId}`).remove();await db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)}};
+$("connectBtn").onclick=connect;init();const q=new URLSearchParams(location.search);if(q.get("room"))$("room").value=q.get("room");connect();
+})();
 </script></body></html>

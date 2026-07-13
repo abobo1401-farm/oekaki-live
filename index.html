@@ -11,10 +11,31 @@ function makeParticipantId(){
   if(window.crypto && typeof window.crypto.randomUUID==="function") return window.crypto.randomUUID();
   return "p-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
 }
-let participantId=localStorage.getItem("oekakiParticipantId")||makeParticipantId();localStorage.setItem("oekakiParticipantId",participantId);let strokesRef=null,clearRef=null,drawing=false,last=null,color="#111111",size=10,eraser=false;
+let participantId=localStorage.getItem("oekakiParticipantId")||makeParticipantId();localStorage.setItem("oekakiParticipantId",participantId);let strokesRef=null,clearVersionRef=null,drawing=false,last=null,color="#111111",size=10,eraser=false,pendingPoints=[],flushTimer=null,currentClearVersion=0,clearing=false;const SEND_INTERVAL=50;
 function status(t,ok=false){$("status").textContent=t;$("status").className="status "+(ok?"ok":"")}function clean(v){return(v||"abo-room").trim().replace(/[.#$\[\]\/]/g,"-").slice(0,30)}
 function init(){if(!window.FIREBASE_CONFIG){status("Firebase設定エラー");return false}if(!firebase.apps.length)firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.database();status("接続できます",true);return true}
-function clearCanvas(){ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height)}function drawStroke(s){ctx.save();ctx.lineCap="round";ctx.lineJoin="round";ctx.strokeStyle=s.eraser?"#fff":s.color;ctx.lineWidth=s.size;ctx.beginPath();ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);ctx.stroke();ctx.restore()}
+function clearCanvas(){ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height)}
+function drawStroke(s){
+ if(!s)return;
+ ctx.save();ctx.lineCap="round";ctx.lineJoin="round";ctx.strokeStyle=s.eraser?"#fff":s.color;ctx.lineWidth=s.size;ctx.beginPath();
+ if(Array.isArray(s.points)&&s.points.length>=2){
+  ctx.moveTo(s.points[0].x,s.points[0].y);
+  for(let i=1;i<s.points.length;i++)ctx.lineTo(s.points[i].x,s.points[i].y);
+ }else{
+  ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);
+ }
+ ctx.stroke();ctx.restore();
+}
+function flushPending(){
+ if(!strokesRef||pendingPoints.length<2){pendingPoints=[];return}
+ const packet={points:pendingPoints.slice(),color,size,eraser,clientId:participantId,clearVersion:currentClearVersion,t:firebase.database.ServerValue.TIMESTAMP};
+ pendingPoints=[pendingPoints[pendingPoints.length-1]];
+ strokesRef.push(packet);
+}
+function scheduleFlush(){
+ if(flushTimer)return;
+ flushTimer=setTimeout(()=>{flushTimer=null;flushPending()},SEND_INTERVAL);
+}
 function pos(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left)*canvas.width/r.width,y:(e.clientY-r.top)*canvas.height/r.height}}
 async function join(){
  const joinBtn=$("joinBtn");
@@ -52,10 +73,33 @@ async function join(){
   joinBtn.disabled=false;joinBtn.textContent="参加する";
  }
 }
-function enter(name,prompt){$("joinBox").hidden=true;$("drawBox").hidden=false;$("meLabel").textContent=prompt?`${name}｜お題：${prompt}`:name;$("slotLabel").textContent=slotId;clearCanvas();strokesRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/strokes`);clearRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/clearAt`);strokesRef.off();clearRef.off();strokesRef.on("child_added",s=>{if(s.val())drawStroke(s.val())});clearRef.on("value",s=>{if(s.exists())clearCanvas()})}
+function cancelPendingDrawing(){drawing=false;last=null;pendingPoints=[];if(flushTimer){clearTimeout(flushTimer);flushTimer=null}}
+function enter(name,prompt){
+ $("joinBox").hidden=true;$("drawBox").hidden=false;$("meLabel").textContent=prompt?`${name}｜お題：${prompt}`:name;$("slotLabel").textContent=slotId;clearCanvas();
+ strokesRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/strokes`);
+ clearVersionRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/clearVersion`);
+ strokesRef.off();clearVersionRef.off();
+ strokesRef.on("child_added",s=>{const v=s.val();if(v&&v.clientId!==participantId)drawStroke(v)});
+ clearVersionRef.on("value",s=>{
+  const next=Number(s.val()||0);
+  if(next!==currentClearVersion){currentClearVersion=next;cancelPendingDrawing();clearCanvas()}
+ })
+}
 async function restore(){roomId=localStorage.getItem("oekakiRoom");slotId=localStorage.getItem("oekakiSlot");if(!roomId||!slotId)return;const s=await db.ref(`drawingRooms/${roomId}/participants/${slotId}`).once("value"),p=s.val();if(p&&p.participantId===participantId){$("room").value=roomId;enter(p.name,p.prompt)}}
 async function leave(){if(roomId&&slotId)await db.ref(`drawingRooms/${roomId}/participants/${slotId}`).remove();localStorage.removeItem("oekakiRoom");localStorage.removeItem("oekakiSlot");location.reload()}
-canvas.addEventListener("pointerdown",e=>{if(!strokesRef)return;drawing=true;canvas.setPointerCapture(e.pointerId);last=pos(e)});canvas.addEventListener("pointermove",e=>{if(!drawing||!strokesRef)return;const p=pos(e),s={x1:last.x,y1:last.y,x2:p.x,y2:p.y,color,size,eraser,t:firebase.database.ServerValue.TIMESTAMP};drawStroke(s);strokesRef.push(s);last=p});["pointerup","pointercancel"].forEach(ev=>canvas.addEventListener(ev,()=>{drawing=false;last=null}));
-$("colors").addEventListener("click",e=>{const b=e.target.closest("[data-color]");if(!b)return;color=b.dataset.color;eraser=false;$("eraserBtn").textContent="消しゴム";document.querySelectorAll(".color").forEach(x=>x.classList.toggle("active",x===b))});$("size").addEventListener("input",()=>{size=+$("size").value;$("sizeValue").textContent=size});$("eraserBtn").onclick=()=>{eraser=!eraser;$("eraserBtn").textContent=eraser?"消しゴム ON":"消しゴム"};$("clearBtn").onclick=async()=>{if(confirm("自分の絵を全部消しますか？")){await strokesRef.remove();await clearRef.set(firebase.database.ServerValue.TIMESTAMP)}};$("joinBtn").onclick=join;$("leaveBtn").onclick=leave;
+canvas.addEventListener("pointerdown",e=>{if(!strokesRef||clearing)return;drawing=true;canvas.setPointerCapture(e.pointerId);last=pos(e);pendingPoints=[last]});
+canvas.addEventListener("pointermove",e=>{if(!drawing||!strokesRef)return;const p=pos(e),s={x1:last.x,y1:last.y,x2:p.x,y2:p.y,color,size,eraser};drawStroke(s);pendingPoints.push(p);scheduleFlush();last=p});
+["pointerup","pointercancel"].forEach(ev=>canvas.addEventListener(ev,()=>{if(drawing)flushPending();drawing=false;last=null;pendingPoints=[];if(flushTimer){clearTimeout(flushTimer);flushTimer=null}}));
+$("colors").addEventListener("click",e=>{const b=e.target.closest("[data-color]");if(!b)return;color=b.dataset.color;eraser=false;$("eraserBtn").textContent="消しゴム";document.querySelectorAll(".color").forEach(x=>x.classList.toggle("active",x===b))});$("size").addEventListener("input",()=>{size=+$("size").value;$("sizeValue").textContent=size});$("eraserBtn").onclick=()=>{eraser=!eraser;$("eraserBtn").textContent=eraser?"消しゴム ON":"消しゴム"};$("clearBtn").onclick=async()=>{
+ if(!confirm("自分の絵を全部消しますか？"))return;
+ clearing=true;cancelPendingDrawing();clearCanvas();
+ const base=db.ref(`drawingRooms/${roomId}/participants/${slotId}`);
+ try{
+  const tx=await base.child("clearVersion").transaction(v=>(Number(v)||0)+1);
+  currentClearVersion=Number(tx.snapshot.val()||currentClearVersion+1);
+  await base.child("strokes").remove();
+  await base.child("clearAt").set(firebase.database.ServerValue.TIMESTAMP);
+ }finally{clearing=false}
+};$("joinBtn").onclick=join;$("leaveBtn").onclick=leave;
 const q=new URLSearchParams(location.search);if(q.get("room"))$("room").value=q.get("room");clearCanvas();if(init())restore()})();
 </script></body></html>
