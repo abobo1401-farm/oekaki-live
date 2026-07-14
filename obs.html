@@ -28,6 +28,7 @@
   const slotStates = new Map();
   const slotListeners = new Map();
   let synchro = null; // holds per-slot offscreen state + listeners while mode==="synchro"
+  let shared = null;  // holds listeners while mode==="shared"
 
   function escapeHtml(value){
     return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -372,12 +373,84 @@
     synchro = { listeners };
   }
 
+  // ---- 共有キャンバスモード ----
+  // 参加者全員が同じ1枚のキャンバス（drawingRooms/{room}/shared）に直接描き込む。
+  // レイヤー合成ではなく、1本のcanvasにみんなのstrokeを順番に描き足していくだけ。
+  function teardownShared(){
+    if(!shared) return;
+    for(const [ref,event,handler] of shared.listeners){
+      ref.off(event,handler);
+    }
+    shared = null;
+  }
+
+  function renderShared(){
+    grid.innerHTML = `<div class="synchro-wrap"><div class="synchro-canvas-shell"><canvas width="1280" height="720"></canvas></div></div>`;
+    grid.className = "obs-grid mode-synchro";
+
+    const canvas = grid.querySelector(".synchro-canvas-shell canvas");
+    const ctx = canvas.getContext("2d");
+    clearCanvas(ctx, canvas);
+
+    const base = db.ref(`drawingRooms/${room}/shared`);
+    const strokesRef = base.child("strokes");
+    const clearVersionRef = base.child("clearVersion");
+
+    let clearVersion = 0;
+    let drawQueue = [];
+    let frameRequested = false;
+
+    const flushDrawQueue = () => {
+      frameRequested = false;
+      const queue = drawQueue.splice(0);
+      for(const stroke of queue){
+        if(Number(stroke.clearVersion || 0) >= clearVersion){
+          drawStroke(ctx, stroke);
+        }
+      }
+    };
+
+    const onStroke = snap => {
+      const stroke = snap.val();
+      if(!stroke) return;
+      if(Number(stroke.clearVersion || 0) < clearVersion) return;
+      drawQueue.push(stroke);
+      if(!frameRequested){
+        frameRequested = true;
+        requestAnimationFrame(flushDrawQueue);
+      }
+    };
+
+    const onClearVersion = snap => {
+      const next = Number(snap.val() || 0);
+      if(next !== clearVersion){
+        clearVersion = next;
+        drawQueue.length = 0;
+        clearCanvas(ctx, canvas);
+      }
+    };
+
+    clearVersionRef.on("value",onClearVersion);
+    strokesRef.on("child_added",onStroke);
+
+    shared = { listeners: [
+      [clearVersionRef,"value",onClearVersion],
+      [strokesRef,"child_added",onStroke]
+    ] };
+  }
+
   function applyMode(){
     if(mode === "synchro"){
       teardownGrid();
+      teardownShared();
       renderSynchro();
+    }else if(mode === "shared"){
+      teardownGrid();
+      teardownSynchro();
+      renderShared();
     }else{
       teardownSynchro();
+      teardownShared();
       renderLayout();
     }
   }
@@ -394,7 +467,8 @@
   });
 
   db.ref(`drawingRooms/${room}/settings/mode`).on("value", snap => {
-    mode = snap.val() === "synchro" ? "synchro" : "grid";
+    const v = snap.val();
+    mode = (v === "synchro" || v === "shared") ? v : "grid";
     applyMode();
   });
 })();

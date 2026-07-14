@@ -1,9 +1,9 @@
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>お絵描き参加ページ</title><link rel="stylesheet" href="style.css"></head>
 <body><main class="wrap"><section class="card stack"><div class="head"><div><h2 style="margin:0">🎨 お絵描き参加ページ</h2><div class="small">名前を入力して参加します</div></div><div id="status" class="status">接続確認中</div></div>
 <div id="joinBox" class="stack"><div class="row"><label>部屋ID <input id="room" value="abo-room" maxlength="30"></label></div><label>名前<br><input id="name" maxlength="20" placeholder="表示する名前" style="width:100%"></label><button id="joinBtn" type="button">参加する</button><div class="small">空いている枠へ自動で入ります。最大4人です。</div></div>
-<div id="drawBox" class="stack" hidden><div class="row"><strong id="meLabel"></strong><span class="small" id="slotLabel"></span><span class="small" id="partLabel" style="font-weight:800"></span><button id="leaveBtn" class="secondary" style="margin-left:auto">退出</button></div><div class="canvas-shell"><canvas id="canvas" width="1280" height="720"></canvas></div>
+<div id="drawBox" class="stack" hidden><div class="row"><strong id="meLabel"></strong><span class="small" id="slotLabel"></span><span class="small" id="partLabel" style="font-weight:800"></span><span class="small" id="sharedBadge" hidden style="font-weight:800;color:#2e7d32">🖌️ みんなで共有中</span><button id="leaveBtn" class="secondary" style="margin-left:auto">退出</button></div><div class="canvas-shell"><canvas id="canvas" width="1280" height="720"></canvas></div>
 <div class="toolbar"><div class="tool"><strong>ペン色</strong><div class="colors" id="colors"><button class="color active" data-color="#111111" style="background:#111"></button><button class="color" data-color="#e53935" style="background:#e53935"></button><button class="color" data-color="#1e88e5" style="background:#1e88e5"></button><button class="color" data-color="#43a047" style="background:#43a047"></button><button class="color" data-color="#f9a825" style="background:#f9a825"></button><button class="color" data-color="#8e24aa" style="background:#8e24aa" aria-label="紫"></button><button class="color" data-color="#ff5fa2" style="background:#ff5fa2" aria-label="ピンク"></button></div></div>
-<div class="tool"><label><strong>線の太さ：<span id="sizeValue">10</span></strong><br><input id="size" type="range" min="2" max="40" value="10" style="width:100%"></label></div><div class="tool row"><button id="eraserBtn" class="secondary">消しゴム</button><button id="clearBtn" class="danger">自分の絵を全消し</button></div></div></div></section></main>
+<div class="tool"><label><strong>線の太さ：<span id="sizeValue">10</span></strong><br><input id="size" type="range" min="2" max="40" value="10" style="width:100%"></label></div><div class="tool row"><button id="eraserBtn" class="secondary">消しゴム</button><button id="saveBtn" class="secondary">🖼️ 画像を保存</button><button id="clearBtn" class="danger">自分の絵を全消し</button></div></div></div></section></main>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script><script src="firebase-config.js"></script>
 <script>
 (()=>{const $=id=>document.getElementById(id),canvas=$("canvas"),ctx=canvas.getContext("2d");let db,roomId="",slotId="";
@@ -11,7 +11,7 @@ function makeParticipantId(){
   if(window.crypto && typeof window.crypto.randomUUID==="function") return window.crypto.randomUUID();
   return "p-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
 }
-let participantId=localStorage.getItem("oekakiParticipantId")||makeParticipantId();localStorage.setItem("oekakiParticipantId",participantId);let strokesRef=null,clearVersionRef=null,drawing=false,last=null,color="#111111",size=10,eraser=false,pendingPoints=[],flushTimer=null,currentClearVersion=0,clearing=false;const SEND_INTERVAL=50;
+let participantId=localStorage.getItem("oekakiParticipantId")||makeParticipantId();localStorage.setItem("oekakiParticipantId",participantId);let strokesRef=null,clearVersionRef=null,modeRef=null,mode="private",drawing=false,last=null,color="#111111",size=10,eraser=false,pendingPoints=[],flushTimer=null,currentClearVersion=0,clearing=false;const SEND_INTERVAL=50;
 function status(t,ok=false){$("status").textContent=t;$("status").className="status "+(ok?"ok":"")}function clean(v){return(v||"abo-room").trim().replace(/[.#$\[\]\/]/g,"-").slice(0,30)}
 function init(){if(!window.FIREBASE_CONFIG){status("Firebase設定エラー");return false}if(!firebase.apps.length)firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.database();status("接続できます",true);return true}
 function clearCanvas(){ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height)}
@@ -52,7 +52,9 @@ async function join(){
   for(let i=1;i<=maxParticipants;i++){
    const ref=db.ref(`drawingRooms/${roomId}/participants/slot${i}`);
    const result=await ref.transaction(cur=>{
-    if(cur===null || cur.participantId===participantId){
+    // 空きスロットでも「絵を全消し」等の操作でclearVersion/clearAtだけが残ることがあるため、
+    // cur===nullだけでなく「participantIdが無い」場合も空き扱いにする。
+    if(!cur || !cur.participantId || cur.participantId===participantId){
      return {participantId,name,prompt:"",hidden:true,joinedAt:firebase.database.ServerValue.TIMESTAMP};
     }
     return;
@@ -74,18 +76,50 @@ async function join(){
  }
 }
 function cancelPendingDrawing(){drawing=false;last=null;pendingPoints=[];if(flushTimer){clearTimeout(flushTimer);flushTimer=null}}
-function enter(name,prompt){
- $("joinBox").hidden=true;$("drawBox").hidden=false;$("meLabel").textContent=prompt?`${name}｜お題：${prompt}`:name;$("slotLabel").textContent=slotId;clearCanvas();
- strokesRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/strokes`);
- clearVersionRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/clearVersion`);
- const partRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/part`);
- strokesRef.off();clearVersionRef.off();partRef.off();
- strokesRef.on("child_added",s=>{const v=s.val();if(v&&v.clientId!==participantId)drawStroke(v)});
+function basePath(){
+ return mode==="shared" ? `drawingRooms/${roomId}/shared` : `drawingRooms/${roomId}/participants/${slotId}`;
+}
+function updateModeUI(){
+ $("clearBtn").hidden = mode==="shared";
+ $("sharedBadge").hidden = mode!=="shared";
+}
+async function attachDrawingRefs(){
+ if(strokesRef)strokesRef.off();
+ if(clearVersionRef)clearVersionRef.off();
+ cancelPendingDrawing();clearCanvas();
+ const base=db.ref(basePath());
+ strokesRef=base.child("strokes");
+ clearVersionRef=base.child("clearVersion");
+ // 先に現在のclearVersionを確定してから過去の線を再生することで、
+ // 消去前の古い線が一瞬でも紛れ込むのを防ぐ（共有キャンバスで複数人分を再生する時に重要）。
+ const snap=await clearVersionRef.once("value");
+ currentClearVersion=Number(snap.val()||0);
+ strokesRef.on("child_added",s=>{
+  const v=s.val();
+  if(!v||v.clientId===participantId)return;
+  if(Number(v.clearVersion||0)<currentClearVersion)return;
+  drawStroke(v);
+ });
  clearVersionRef.on("value",s=>{
   const next=Number(s.val()||0);
   if(next!==currentClearVersion){currentClearVersion=next;cancelPendingDrawing();clearCanvas()}
  });
+}
+function enter(name,prompt){
+ $("joinBox").hidden=true;$("drawBox").hidden=false;$("meLabel").textContent=prompt?`${name}｜お題：${prompt}`:name;$("slotLabel").textContent=slotId;
+ const partRef=db.ref(`drawingRooms/${roomId}/participants/${slotId}/part`);
+ partRef.off();
  partRef.on("value",s=>{const part=s.val();$("partLabel").textContent=part?`担当パーツ：${part}`:""});
+ if(modeRef)modeRef.off();
+ modeRef=db.ref(`drawingRooms/${roomId}/settings/mode`);
+ let modeInitialized=false;
+ modeRef.on("value",async s=>{
+  const next=s.val()==="shared"?"shared":"private";
+  if(next===mode&&modeInitialized)return;
+  mode=next;modeInitialized=true;
+  updateModeUI();
+  await attachDrawingRefs();
+ });
 }
 async function restore(){roomId=localStorage.getItem("oekakiRoom");slotId=localStorage.getItem("oekakiSlot");if(!roomId||!slotId)return;const s=await db.ref(`drawingRooms/${roomId}/participants/${slotId}`).once("value"),p=s.val();if(p&&p.participantId===participantId){$("room").value=roomId;enter(p.name,p.prompt)}}
 async function leave(){if(roomId&&slotId)await db.ref(`drawingRooms/${roomId}/participants/${slotId}`).remove();localStorage.removeItem("oekakiRoom");localStorage.removeItem("oekakiSlot");location.reload()}
@@ -102,6 +136,16 @@ $("colors").addEventListener("click",e=>{const b=e.target.closest("[data-color]"
   await base.child("strokes").remove();
   await base.child("clearAt").set(firebase.database.ServerValue.TIMESTAMP);
  }finally{clearing=false}
-};$("joinBtn").onclick=join;$("leaveBtn").onclick=leave;
+};
+$("saveBtn").onclick=()=>{
+ canvas.toBlob(blob=>{
+  const url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download=`oekaki-${name_for_file()}-${Date.now()}.png`;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+ },"image/png");
+};
+function name_for_file(){return (($("meLabel").textContent||slotId||"canvas").replace(/[^\w\-一-龯ぁ-んァ-ン]/g,""))||"canvas"}
+$("joinBtn").onclick=join;$("leaveBtn").onclick=leave;
 const q=new URLSearchParams(location.search);if(q.get("room"))$("room").value=q.get("room");clearCanvas();if(init())restore()})();
 </script></body></html>
