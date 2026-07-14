@@ -177,7 +177,9 @@
 
     const onStroke = snap => {
       const stroke = snap.val();
-      if(!state.participantId || !stroke) return;
+      // participantIdの読み込みタイミングに依存しないよう、ここでは弾かない。
+      // 表示・非表示はupdateVisibility()側のCSS(canvas display)で制御される。
+      if(!stroke) return;
       if(Number(stroke.clearVersion || 0) < state.clearVersion) return;
       state.drawQueue.push(stroke);
       if(!state.frameRequested){
@@ -334,7 +336,9 @@
 
       const onStroke = snap => {
         const stroke = snap.val();
-        if(!s.occupied || !stroke) return;
+        // occupied判定の読み込みタイミングに依存しないよう、ここでは弾かない。
+        // 表示するかどうかはqueueComposite()側でs.occupied/s.hiddenを見て毎回判定される。
+        if(!stroke) return;
         if(Number(stroke.clearVersion || 0) < s.clearVersion) return;
         s.drawQueue.push(stroke);
         if(!s.frameRequested){
