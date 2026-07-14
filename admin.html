@@ -9,7 +9,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script><script src="firebase-config.js"></script>
 <script>
 (()=>{
-const $=id=>document.getElementById(id);let db,roomId="",currentMode="grid";const slotListeners=new Map(),slotData={};let modeRef=null,modeHandler=null;
+const $=id=>document.getElementById(id);let db,roomId="",currentMode="grid",currentLayout=4;const slotListeners=new Map(),slotData={};let modeRef=null,modeHandler=null,layoutRef=null,layoutHandler=null;
 function status(t,ok=false){$("status").textContent=t;$("status").className="status "+(ok?"ok":"")}
 function clean(v){return(v||"abo-room").trim().replace(/[.#$\[\]\/]/g,"-").slice(0,30)}
 function init(){if(!firebase.apps.length)firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.database()}
@@ -47,7 +47,15 @@ function watchSlot(id){
 function connect(){
  roomId=clean($("room").value);$("room").value=roomId;history.replaceState(null,"",`?room=${encodeURIComponent(roomId)}`);urls();stopSlotListeners();
  for(let i=1;i<=4;i++)watchSlot(`slot${i}`);
- db.ref(`drawingRooms/${roomId}/settings/layout`).once("value").then(s=>{if(!s.exists())db.ref(`drawingRooms/${roomId}/settings/layout`).set(4)});
+ if(layoutRef&&layoutHandler)layoutRef.off("value",layoutHandler);
+ layoutRef=db.ref(`drawingRooms/${roomId}/settings/layout`);
+ layoutRef.once("value").then(s=>{if(!s.exists())layoutRef.set(4)});
+ layoutHandler=s=>{
+  const v=[1,2,4].includes(Number(s.val()))?Number(s.val()):4;
+  currentLayout=v;
+  document.querySelectorAll("[data-layout]").forEach(b=>b.classList.toggle("secondary",Number(b.dataset.layout)!==v));
+ };
+ layoutRef.on("value",layoutHandler);
  if(modeRef&&modeHandler)modeRef.off("value",modeHandler);
  modeRef=db.ref(`drawingRooms/${roomId}/settings/mode`);
  modeRef.once("value").then(s=>{if(!s.exists())modeRef.set("grid")});
@@ -98,7 +106,16 @@ async function buildExportCanvas(){
  return null;
 }
 document.addEventListener("click",async e=>{
- const l=e.target.closest("[data-layout]");if(l){const n=+l.dataset.layout;await db.ref(`drawingRooms/${roomId}/settings/layout`).set(n);document.querySelectorAll("[data-layout]").forEach(b=>b.classList.toggle("secondary",b!==l));return}
+ const l=e.target.closest("[data-layout]");
+ if(l){
+  const n=+l.dataset.layout;
+  if(n===currentLayout)return;
+  // 1人/2人/4人表示の切り替え前に、参加者全員の絵を消してから切り替える。
+  const occupied=[1,2,3,4].filter(i=>slotData[`slot${i}`]&&slotData[`slot${i}`].participantId);
+  await Promise.all(occupied.map(i=>clearSlot(`slot${i}`)));
+  await db.ref(`drawingRooms/${roomId}/settings/layout`).set(n);
+  return;
+ }
  const md=e.target.closest("[data-mode]");
  if(md){
   const nextMode=md.dataset.mode;
