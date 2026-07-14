@@ -197,10 +197,30 @@
       }
     };
 
+    // 誰かが線を「ひとつ戻る」等で削除した時は、1本だけ消すことができないので
+    // 現在残っている線を全部読み直して描き直す。
+    async function redrawFromScratch(){
+      const snap = await strokesRef.once("value");
+      const all = snap.val() || {};
+      clearCanvas(state.ctx,state.canvas);
+      Object.values(all).forEach(stroke => {
+        if(Number(stroke && stroke.clearVersion || 0) >= state.clearVersion){
+          drawStroke(state.ctx,stroke);
+        }
+      });
+    }
+    let redrawQueued = false;
+    const onStrokeRemoved = () => {
+      if(redrawQueued) return;
+      redrawQueued = true;
+      requestAnimationFrame(async () => { redrawQueued = false; await redrawFromScratch(); });
+    };
+
     participantIdRef.on("value",onParticipantId);
     nameRef.on("value",onName);
     promptRef.on("value",onPrompt);
     strokesRef.on("child_added",onStroke);
+    strokesRef.on("child_removed",onStrokeRemoved);
     clearVersionRef.on("value",onClearVersion);
     hiddenRef.on("value",onHidden);
 
@@ -209,6 +229,7 @@
       [nameRef,"value",onName],
       [promptRef,"value",onPrompt],
       [strokesRef,"child_added",onStroke],
+      [strokesRef,"child_removed",onStrokeRemoved],
       [clearVersionRef,"value",onClearVersion],
       [hiddenRef,"value",onHidden]
     );
@@ -224,6 +245,27 @@
     }
     slotStates.clear();
   }
+
+  // グリッド(1人/2人/4人)表示の各枠が16:9を保ったまま最大サイズになるよう、
+  // CSS Gridの1frによる引き伸ばしではなくJSでセルの実ピクセルサイズを計算する。
+  function fitObsGrid(){
+    if(grid.classList.contains("focus-mode")) return;
+    if(mode !== "grid") return;
+    const cols = layout === 1 ? 1 : 2;
+    const rows = layout === 4 ? 2 : 1;
+    const gap = 12, pad = 12;
+    const availW = Math.max(0, window.innerWidth - pad*2 - gap*(cols-1));
+    const availH = Math.max(0, window.innerHeight - pad*2 - gap*(rows-1));
+    let cellW = availW / cols;
+    let cellH = cellW * 9 / 16;
+    if(cellH * rows > availH){
+      cellH = availH / rows;
+      cellW = cellH * 16 / 9;
+    }
+    grid.style.setProperty("--cell-w", cellW + "px");
+    grid.style.setProperty("--cell-h", cellH + "px");
+  }
+  window.addEventListener("resize", fitObsGrid);
 
   function renderLayout(){
     if(mode !== "grid") return;
@@ -241,6 +283,7 @@
         grid.appendChild(createSlot(slot,i));
       }
     }
+    fitObsGrid();
   }
 
   // ---- シンクロ表示（合体イラスト）モード ----
@@ -357,11 +400,32 @@
         }
       };
 
+      // 誰かが線を「ひとつ戻る」等で削除した時は、そのスロットのオフスクリーンを
+      // 全部読み直して描き直してから、合成を再実行する。
+      async function redrawOffCanvasFromScratch(){
+        const snap = await strokesRef.once("value");
+        const all = snap.val() || {};
+        clearTransparent(s.offCtx, offCanvas);
+        Object.values(all).forEach(stroke => {
+          if(Number(stroke && stroke.clearVersion || 0) >= s.clearVersion){
+            drawStroke(s.offCtx, stroke);
+          }
+        });
+        queueComposite();
+      }
+      let redrawQueued = false;
+      const onStrokeRemoved = () => {
+        if(redrawQueued) return;
+        redrawQueued = true;
+        requestAnimationFrame(async () => { redrawQueued = false; await redrawOffCanvasFromScratch(); });
+      };
+
       participantIdRef.on("value",onParticipantId);
       nameRef.on("value",onName);
       partRef.on("value",onPart);
       hiddenRef.on("value",onHidden);
       strokesRef.on("child_added",onStroke);
+      strokesRef.on("child_removed",onStrokeRemoved);
       clearVersionRef.on("value",onClearVersion);
 
       listeners.push(
@@ -370,6 +434,7 @@
         [partRef,"value",onPart],
         [hiddenRef,"value",onHidden],
         [strokesRef,"child_added",onStroke],
+        [strokesRef,"child_removed",onStrokeRemoved],
         [clearVersionRef,"value",onClearVersion]
       );
     }
@@ -434,12 +499,33 @@
       }
     };
 
+    // 誰かが線を「ひとつ戻る」等で削除した時は、1本だけ消すことができないので
+    // 共有キャンバス全体を読み直して描き直す。
+    async function redrawSharedFromScratch(){
+      const snap = await strokesRef.once("value");
+      const all = snap.val() || {};
+      clearCanvas(ctx, canvas);
+      Object.values(all).forEach(stroke => {
+        if(Number(stroke && stroke.clearVersion || 0) >= clearVersion){
+          drawStroke(ctx, stroke);
+        }
+      });
+    }
+    let redrawQueued = false;
+    const onStrokeRemoved = () => {
+      if(redrawQueued) return;
+      redrawQueued = true;
+      requestAnimationFrame(async () => { redrawQueued = false; await redrawSharedFromScratch(); });
+    };
+
     clearVersionRef.on("value",onClearVersion);
     strokesRef.on("child_added",onStroke);
+    strokesRef.on("child_removed",onStrokeRemoved);
 
     shared = { listeners: [
       [clearVersionRef,"value",onClearVersion],
-      [strokesRef,"child_added",onStroke]
+      [strokesRef,"child_added",onStroke],
+      [strokesRef,"child_removed",onStrokeRemoved]
     ] };
   }
 

@@ -99,7 +99,21 @@ async function buildExportCanvas(){
 }
 document.addEventListener("click",async e=>{
  const l=e.target.closest("[data-layout]");if(l){const n=+l.dataset.layout;await db.ref(`drawingRooms/${roomId}/settings/layout`).set(n);document.querySelectorAll("[data-layout]").forEach(b=>b.classList.toggle("secondary",b!==l));return}
- const md=e.target.closest("[data-mode]");if(md){await db.ref(`drawingRooms/${roomId}/settings/mode`).set(md.dataset.mode);return}
+ const md=e.target.closest("[data-mode]");
+ if(md){
+  const nextMode=md.dataset.mode;
+  if(nextMode===currentMode)return;
+  const involvesShared=nextMode==="shared"||currentMode==="shared";
+  if(involvesShared){
+   const ok=confirm("モードを切り替える前に、参加者全員の絵（各自のプライベート分＋共有キャンバス）をすべて消します。よろしいですか？");
+   if(!ok)return;
+   const occupied=[1,2,3,4].filter(i=>slotData[`slot${i}`]&&slotData[`slot${i}`].participantId);
+   await Promise.all(occupied.map(i=>clearSlot(`slot${i}`)));
+   await clearShared();
+  }
+  await db.ref(`drawingRooms/${roomId}/settings/mode`).set(nextMode);
+  return;
+ }
  const v=e.target.closest(".visibility");if(v){await db.ref(`drawingRooms/${roomId}/participants/${v.dataset.slot}/hidden`).set(v.dataset.hidden==="true");return}
  const z=e.target.closest(".zoom");if(z){await db.ref(`drawingRooms/${roomId}/settings/focusSlot`).set(z.dataset.slot);return}
  const c=e.target.closest(".clear");if(c){await clearSlot(c.dataset.slot);return}
