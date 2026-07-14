@@ -88,7 +88,7 @@
     box.className = "obs-slot";
     box.dataset.slot = slot;
     box.innerHTML = `
-      <canvas width="1280" height="720"></canvas>
+      <canvas width="1080" height="1080"></canvas>
       <div class="obs-meta" hidden>
         <span class="badge name-badge"></span>
         <span class="badge prompt-badge" hidden></span>
@@ -246,32 +246,49 @@
     slotStates.clear();
   }
 
-  // グリッド(1人/2人/4人)表示の各枠が16:9を保ったまま最大サイズになるよう、
+  // グリッド(1人/2人/4人)表示の各枠が正方形(1:1)を保ったまま最大サイズになるよう、
   // CSS Gridの1frによる引き伸ばしではなくJSでセルの実ピクセルサイズを計算する。
   function fitObsGrid(){
     if(grid.classList.contains("focus-mode")) return;
     if(mode !== "grid") return;
-    const cols = layout === 1 ? 1 : 2;
+    const cols = layout === 5 ? 5 : (layout === 1 ? 1 : 2);
     const rows = layout === 4 ? 2 : 1;
     const gap = 12, pad = 12;
     const availW = Math.max(0, window.innerWidth - pad*2 - gap*(cols-1));
     const availH = Math.max(0, window.innerHeight - pad*2 - gap*(rows-1));
     let cellW = availW / cols;
-    let cellH = cellW * 9 / 16;
+    let cellH = cellW; // 正方形なので幅=高さ
     if(cellH * rows > availH){
       cellH = availH / rows;
-      cellW = cellH * 16 / 9;
+      cellW = cellH;
     }
     grid.style.setProperty("--cell-w", cellW + "px");
     grid.style.setProperty("--cell-h", cellH + "px");
   }
   window.addEventListener("resize", fitObsGrid);
 
+  // シンクロ/共有キャンバスの正方形キャンバスが、ステータスバッジ行を除いた
+  // 残りスペースに収まる最大の正方形になるよう計算する。
+  function fitSquareShell(){
+    const wrap = grid.querySelector(".synchro-wrap");
+    const shell = grid.querySelector(".synchro-canvas-shell");
+    if(!wrap || !shell) return;
+    const statusEl = grid.querySelector(".synchro-status");
+    const wrapRect = wrap.getBoundingClientRect();
+    const gap = 18;
+    const statusH = statusEl ? statusEl.getBoundingClientRect().height : 0;
+    const availW = wrapRect.width;
+    const availH = wrapRect.height - statusH - (statusH > 0 ? gap : 0);
+    const size = Math.max(0, Math.min(availW, availH));
+    shell.style.setProperty("--shell-size", size + "px");
+  }
+  window.addEventListener("resize", fitSquareShell);
+
   function renderLayout(){
     if(mode !== "grid") return;
     teardownGrid();
     grid.innerHTML = "";
-    const focused = focusSlot && /^slot[1-4]$/.test(focusSlot);
+    const focused = focusSlot && /^slot[1-5]$/.test(focusSlot);
     grid.className = focused ? "obs-grid layout-1 focus-mode" : `obs-grid layout-${layout}`;
 
     if(focused){
@@ -300,7 +317,7 @@
   function renderSynchro(){
     grid.innerHTML = `
       <div class="synchro-wrap">
-        <div class="synchro-canvas-shell"><canvas width="1280" height="720"></canvas></div>
+        <div class="synchro-canvas-shell"><canvas width="1080" height="1080"></canvas></div>
         <div class="synchro-status"></div>
       </div>`;
     grid.className = "obs-grid mode-synchro";
@@ -309,8 +326,9 @@
     const ctx = canvas.getContext("2d");
     const statusEl = grid.querySelector(".synchro-status");
     clearCanvas(ctx, canvas);
+    fitSquareShell();
 
-    const slots = [1,2,3,4].map(n => `slot${n}`);
+    const slots = [1,2,3,4,5].map(n => `slot${n}`);
     const states = {};
     const listeners = [];
     let compositeQueued = false;
@@ -338,11 +356,12 @@
         const revealed = !s.hidden;
         return `<div class="part-badge ${revealed ? "revealed" : "pending"}"><span class="dot"></span>${label}${revealed ? "" : "（準備中）"}</div>`;
       }).join("");
+      fitSquareShell();
     };
 
     for(const slot of slots){
       const offCanvas = document.createElement("canvas");
-      offCanvas.width = 1280; offCanvas.height = 720;
+      offCanvas.width = 1080; offCanvas.height = 1080;
       const offCtx = offCanvas.getContext("2d");
       clearTransparent(offCtx, offCanvas);
 
@@ -454,12 +473,13 @@
   }
 
   function renderShared(){
-    grid.innerHTML = `<div class="synchro-wrap"><div class="synchro-canvas-shell"><canvas width="1280" height="720"></canvas></div></div>`;
+    grid.innerHTML = `<div class="synchro-wrap"><div class="synchro-canvas-shell"><canvas width="1080" height="1080"></canvas></div></div>`;
     grid.className = "obs-grid mode-synchro";
 
     const canvas = grid.querySelector(".synchro-canvas-shell canvas");
     const ctx = canvas.getContext("2d");
     clearCanvas(ctx, canvas);
+    fitSquareShell();
 
     const base = db.ref(`drawingRooms/${room}/shared`);
     const strokesRef = base.child("strokes");
@@ -547,7 +567,7 @@
 
   db.ref(`drawingRooms/${room}/settings/layout`).on("value", snap => {
     const next = Number(snap.val());
-    layout = [1,2,4].includes(next) ? next : 4;
+    layout = [1,2,4,5].includes(next) ? next : 4;
     renderLayout();
   });
 
