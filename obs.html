@@ -25,6 +25,7 @@
   let layout = 4;
   let focusSlot = null;
   let mode = "grid";
+  let showNames = true;
   const slotStates = new Map();
   const slotListeners = new Map();
   let synchro = null; // holds per-slot offscreen state + listeners while mode==="synchro"
@@ -40,14 +41,8 @@
     }[char]));
   }
 
-  function clearCanvas(ctx, canvas){
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-  }
-
-  // シンクロ合成用：各参加者のオフスクリーンcanvasは「透明」でクリアする。
-  // 不透明な白でクリアすると、drawImageで重ねたときに下のレイヤーの絵を覆い隠してしまうため。
+  // 見た目上の「枠」(border/box-shadow)はCSSで維持しつつ、canvas自体の背景は透明にする。
+  // OBSの合成先(配信画面など)が透けて見えるようにするため。
   function clearTransparent(ctx, canvas){
     ctx.clearRect(0,0,canvas.width,canvas.height);
   }
@@ -57,7 +52,13 @@
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = stroke.eraser ? "#ffffff" : (stroke.color || "#111111");
+    if(stroke.eraser){
+      // canvas背景が透明なため、白を塗るのではなく実際にピクセルを消して透明に戻す。
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.strokeStyle = "#000000";
+    }else{
+      ctx.strokeStyle = stroke.color || "#111111";
+    }
     ctx.lineWidth = Number(stroke.size || 10);
     ctx.beginPath();
     if(Array.isArray(stroke.points) && stroke.points.length >= 2){
@@ -88,27 +89,29 @@
     box.className = "obs-slot";
     box.dataset.slot = slot;
     box.innerHTML = `
-      <canvas width="1080" height="1080"></canvas>
-      <div class="obs-meta" hidden>
-        <span class="badge name-badge"></span>
+      <div class="obs-slot-label ${showNames ? "" : "is-off"}">
+        <span class="badge name-badge" hidden></span>
         <span class="badge prompt-badge" hidden></span>
       </div>
-      <div class="blind-cover"><div><strong>🎨 お絵描き中</strong><span>公開までお待ちください</span></div></div>
-      <div class="empty">参加待ち</div>
+      <div class="obs-slot-canvas">
+        <canvas width="1080" height="1080"></canvas>
+        <div class="blind-cover"><div><strong>🎨 お絵描き中</strong><span>公開までお待ちください</span></div></div>
+        <div class="empty">参加待ち</div>
+      </div>
     `;
 
     const canvas = box.querySelector("canvas");
     const ctx = canvas.getContext("2d");
-    const meta = box.querySelector(".obs-meta");
+    const label = box.querySelector(".obs-slot-label");
     const empty = box.querySelector(".empty");
     const nameBadge = box.querySelector(".name-badge");
     const promptBadge = box.querySelector(".prompt-badge");
     const blindCover = box.querySelector(".blind-cover");
 
-    clearCanvas(ctx, canvas);
+    clearTransparent(ctx, canvas);
 
     const state = {
-      box, canvas, ctx, meta, empty, nameBadge, promptBadge, blindCover,
+      box, canvas, ctx, label, empty, nameBadge, promptBadge, blindCover,
       participantId: null,
       name: "",
       prompt: "",
@@ -132,20 +135,24 @@
     const updateVisibility = () => {
       const occupied = Boolean(state.participantId);
       state.canvas.style.display = occupied ? "block" : "none";
-      state.meta.hidden = !occupied;
+      state.nameBadge.hidden = !occupied;
       state.empty.style.display = occupied ? "none" : "grid";
       state.blindCover.style.display = occupied && state.hidden ? "grid" : "none";
+    };
 
-      if(!occupied){
-        clearCanvas(state.ctx,state.canvas);
+    const onParticipantId = snap => {
+      const wasOccupied = Boolean(state.participantId);
+      state.participantId = snap.val() || null;
+      const isOccupied = Boolean(state.participantId);
+      // 本当に誰かが退出して空きになった時だけキャンバスを消す。
+      // participantId/hiddenの読み込み順序（どちらが先に届くか）に依存して
+      // 「まだ読み込み中なだけ」を「空き」と誤判定し、絵を消してしまわないようにする。
+      if(wasOccupied && !isOccupied){
+        clearTransparent(state.ctx,state.canvas);
         state.nameBadge.textContent = "";
         state.promptBadge.textContent = "";
         state.promptBadge.hidden = true;
       }
-    };
-
-    const onParticipantId = snap => {
-      state.participantId = snap.val() || null;
       updateVisibility();
     };
 
@@ -193,7 +200,7 @@
       if(next !== state.clearVersion){
         state.clearVersion = next;
         state.drawQueue.length = 0;
-        clearCanvas(state.ctx,state.canvas);
+        clearTransparent(state.ctx,state.canvas);
       }
     };
 
@@ -202,7 +209,7 @@
     async function redrawFromScratch(){
       const snap = await strokesRef.once("value");
       const all = snap.val() || {};
-      clearCanvas(state.ctx,state.canvas);
+      clearTransparent(state.ctx,state.canvas);
       Object.values(all).forEach(stroke => {
         if(Number(stroke && stroke.clearVersion || 0) >= state.clearVersion){
           drawStroke(state.ctx,stroke);
@@ -246,26 +253,36 @@
     slotStates.clear();
   }
 
-  // グリッド(1人/2人/4人)表示の各枠が正方形(1:1)を保ったまま最大サイズになるよう、
+  // グリッド(1人/2人/4人/5人)表示の各枠が正方形(1:1)を保ったまま最大サイズになるよう、
   // CSS Gridの1frによる引き伸ばしではなくJSでセルの実ピクセルサイズを計算する。
+  // 名前ラベル分の高さ(labelH)も行の高さ予算から差し引く。
   function fitObsGrid(){
     if(grid.classList.contains("focus-mode")) return;
     if(mode !== "grid") return;
     const cols = layout === 5 ? 5 : (layout === 1 ? 1 : 2);
     const rows = layout === 4 ? 2 : 1;
-    const gap = 12, pad = 12;
+    const gap = 12, pad = 12, labelH = showNames ? 32 : 0;
     const availW = Math.max(0, window.innerWidth - pad*2 - gap*(cols-1));
     const availH = Math.max(0, window.innerHeight - pad*2 - gap*(rows-1));
     let cellW = availW / cols;
     let cellH = cellW; // 正方形なので幅=高さ
-    if(cellH * rows > availH){
-      cellH = availH / rows;
+    if((cellH + labelH) * rows > availH){
+      cellH = Math.max(0, availH / rows - labelH);
       cellW = cellH;
     }
     grid.style.setProperty("--cell-w", cellW + "px");
     grid.style.setProperty("--cell-h", cellH + "px");
+    grid.style.setProperty("--label-h", labelH + "px");
   }
   window.addEventListener("resize", fitObsGrid);
+
+  // 名前表示のON/OFF設定を、既に描画済みの枠にも反映する（作り直し不要）。
+  function applyShowNames(){
+    document.querySelectorAll(".obs-slot-label").forEach(el => {
+      el.classList.toggle("is-off", !showNames);
+    });
+    fitObsGrid();
+  }
 
   // シンクロ/共有キャンバスの正方形キャンバスが、ステータスバッジ行を除いた
   // 残りスペースに収まる最大の正方形になるよう計算する。
@@ -325,7 +342,7 @@
     const canvas = grid.querySelector(".synchro-canvas-shell canvas");
     const ctx = canvas.getContext("2d");
     const statusEl = grid.querySelector(".synchro-status");
-    clearCanvas(ctx, canvas);
+    clearTransparent(ctx, canvas);
     fitSquareShell();
 
     const slots = [1,2,3,4,5].map(n => `slot${n}`);
@@ -338,7 +355,7 @@
       compositeQueued = true;
       requestAnimationFrame(() => {
         compositeQueued = false;
-        clearCanvas(ctx, canvas);
+        clearTransparent(ctx, canvas);
         for(const slot of slots){
           const s = states[slot];
           if(s && s.occupied && !s.hidden){
@@ -478,7 +495,7 @@
 
     const canvas = grid.querySelector(".synchro-canvas-shell canvas");
     const ctx = canvas.getContext("2d");
-    clearCanvas(ctx, canvas);
+    clearTransparent(ctx, canvas);
     fitSquareShell();
 
     const base = db.ref(`drawingRooms/${room}/shared`);
@@ -515,7 +532,7 @@
       if(next !== clearVersion){
         clearVersion = next;
         drawQueue.length = 0;
-        clearCanvas(ctx, canvas);
+        clearTransparent(ctx, canvas);
       }
     };
 
@@ -524,7 +541,7 @@
     async function redrawSharedFromScratch(){
       const snap = await strokesRef.once("value");
       const all = snap.val() || {};
-      clearCanvas(ctx, canvas);
+      clearTransparent(ctx, canvas);
       Object.values(all).forEach(stroke => {
         if(Number(stroke && stroke.clearVersion || 0) >= clearVersion){
           drawStroke(ctx, stroke);
@@ -580,6 +597,11 @@
     const v = snap.val();
     mode = (v === "synchro" || v === "shared") ? v : "grid";
     applyMode();
+  });
+
+  db.ref(`drawingRooms/${room}/settings/showNames`).on("value", snap => {
+    showNames = snap.val() !== false; // 未設定(null)ならデフォルトでON
+    applyShowNames();
   });
 })();
 </script>
