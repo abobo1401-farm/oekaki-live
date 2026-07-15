@@ -223,26 +223,47 @@
       requestAnimationFrame(async () => { redrawQueued = false; await redrawFromScratch(); });
     };
 
-    participantIdRef.on("value",onParticipantId);
-    nameRef.on("value",onName);
-    promptRef.on("value",onPrompt);
-    strokesRef.on("child_added",onStroke);
-    strokesRef.on("child_removed",onStrokeRemoved);
-    clearVersionRef.on("value",onClearVersion);
-    hiddenRef.on("value",onHidden);
+    // 参加者情報・目隠し状態・clearVersionを先にまとめて確定させてから、
+    // strokesのchild_addedリプレイを開始する。これにより「情報の読み込み順序」に
+    // 依存する不整合そのものを起こりえなくする。
+    (async () => {
+      const [pidSnap, nameSnap, promptSnap, hiddenSnap, cvSnap] = await Promise.all([
+        participantIdRef.once("value"),
+        nameRef.once("value"),
+        promptRef.once("value"),
+        hiddenRef.once("value"),
+        clearVersionRef.once("value")
+      ]);
+      if(slotStates.get(slot) !== state) return; // その間にteardownされていたら何もしない
+      state.participantId = pidSnap.val() || null;
+      state.name = nameSnap.val() || "";
+      state.nameBadge.textContent = state.name || `${number}番`;
+      state.prompt = promptSnap.val() || "";
+      state.promptBadge.textContent = state.prompt ? `お題：${state.prompt}` : "";
+      state.promptBadge.hidden = !state.prompt;
+      state.hidden = hiddenSnap.val() !== false;
+      state.clearVersion = Number(cvSnap.val() || 0);
+      updateVisibility();
 
-    listeners.push(
-      [participantIdRef,"value",onParticipantId],
-      [nameRef,"value",onName],
-      [promptRef,"value",onPrompt],
-      [strokesRef,"child_added",onStroke],
-      [strokesRef,"child_removed",onStrokeRemoved],
-      [clearVersionRef,"value",onClearVersion],
-      [hiddenRef,"value",onHidden]
-    );
+      participantIdRef.on("value",onParticipantId);
+      nameRef.on("value",onName);
+      promptRef.on("value",onPrompt);
+      hiddenRef.on("value",onHidden);
+      clearVersionRef.on("value",onClearVersion);
+      strokesRef.on("child_added",onStroke);
+      strokesRef.on("child_removed",onStrokeRemoved);
 
-    slotListeners.set(slot,listeners);
-    updateVisibility();
+      listeners.push(
+        [participantIdRef,"value",onParticipantId],
+        [nameRef,"value",onName],
+        [promptRef,"value",onPrompt],
+        [strokesRef,"child_added",onStroke],
+        [strokesRef,"child_removed",onStrokeRemoved],
+        [clearVersionRef,"value",onClearVersion],
+        [hiddenRef,"value",onHidden]
+      );
+      slotListeners.set(slot,listeners);
+    })();
     return box;
   }
 
@@ -325,6 +346,7 @@
   // 公開(hidden=false)になっているスロットだけを1枚の合成canvasへdrawImageで重ねる。
   function teardownSynchro(){
     if(!synchro) return;
+    if(synchro.cancel) synchro.cancel();
     for(const [ref,event,handler] of synchro.listeners){
       ref.off(event,handler);
     }
@@ -349,6 +371,7 @@
     const states = {};
     const listeners = [];
     let compositeQueued = false;
+    let cancelled = false;
 
     const queueComposite = () => {
       if(compositeQueued) return;
@@ -456,26 +479,46 @@
         requestAnimationFrame(async () => { redrawQueued = false; await redrawOffCanvasFromScratch(); });
       };
 
-      participantIdRef.on("value",onParticipantId);
-      nameRef.on("value",onName);
-      partRef.on("value",onPart);
-      hiddenRef.on("value",onHidden);
-      strokesRef.on("child_added",onStroke);
-      strokesRef.on("child_removed",onStrokeRemoved);
-      clearVersionRef.on("value",onClearVersion);
+      // 参加者情報・目隠し状態・clearVersionを先にまとめて確定させてから、
+      // strokesのchild_addedリプレイを開始する（読み込み順序への依存をなくす）。
+      (async () => {
+        const [pidSnap, nameSnap, partSnap, hiddenSnap, cvSnap] = await Promise.all([
+          participantIdRef.once("value"),
+          nameRef.once("value"),
+          partRef.once("value"),
+          hiddenRef.once("value"),
+          clearVersionRef.once("value")
+        ]);
+        if(cancelled) return;
+        s.occupied = Boolean(pidSnap.val());
+        s.name = nameSnap.val() || "";
+        s.part = partSnap.val() || "";
+        s.hidden = hiddenSnap.val() !== false;
+        s.clearVersion = Number(cvSnap.val() || 0);
+        updateStatus();
+        queueComposite();
 
-      listeners.push(
-        [participantIdRef,"value",onParticipantId],
-        [nameRef,"value",onName],
-        [partRef,"value",onPart],
-        [hiddenRef,"value",onHidden],
-        [strokesRef,"child_added",onStroke],
-        [strokesRef,"child_removed",onStrokeRemoved],
-        [clearVersionRef,"value",onClearVersion]
-      );
+        participantIdRef.on("value",onParticipantId);
+        nameRef.on("value",onName);
+        partRef.on("value",onPart);
+        hiddenRef.on("value",onHidden);
+        strokesRef.on("child_added",onStroke);
+        strokesRef.on("child_removed",onStrokeRemoved);
+        clearVersionRef.on("value",onClearVersion);
+
+        listeners.push(
+          [participantIdRef,"value",onParticipantId],
+          [nameRef,"value",onName],
+          [partRef,"value",onPart],
+          [hiddenRef,"value",onHidden],
+          [strokesRef,"child_added",onStroke],
+          [strokesRef,"child_removed",onStrokeRemoved],
+          [clearVersionRef,"value",onClearVersion]
+        );
+      })();
     }
 
-    synchro = { listeners };
+    synchro = { listeners, cancel(){ cancelled = true; } };
   }
 
   // ---- 共有キャンバスモード ----
@@ -555,15 +598,22 @@
       requestAnimationFrame(async () => { redrawQueued = false; await redrawSharedFromScratch(); });
     };
 
-    clearVersionRef.on("value",onClearVersion);
-    strokesRef.on("child_added",onStroke);
-    strokesRef.on("child_removed",onStrokeRemoved);
+    let cancelled = false;
+    (async () => {
+      const cvSnap = await clearVersionRef.once("value");
+      if(cancelled) return;
+      clearVersion = Number(cvSnap.val() || 0);
+      clearVersionRef.on("value",onClearVersion);
+      strokesRef.on("child_added",onStroke);
+      strokesRef.on("child_removed",onStrokeRemoved);
+      shared.listeners.push(
+        [clearVersionRef,"value",onClearVersion],
+        [strokesRef,"child_added",onStroke],
+        [strokesRef,"child_removed",onStrokeRemoved]
+      );
+    })();
 
-    shared = { listeners: [
-      [clearVersionRef,"value",onClearVersion],
-      [strokesRef,"child_added",onStroke],
-      [strokesRef,"child_removed",onStrokeRemoved]
-    ] };
+    shared = { listeners: [], cancel(){ cancelled = true; } };
   }
 
   function applyMode(){
